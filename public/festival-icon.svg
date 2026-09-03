@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Festival voting icon">
+  <rect width="512" height="512" rx="112" fill="#151026"/>
+  <path d="M56 350c48-72 88-92 132-50 35 34 70 30 108-14 49-57 96-43 160 64H56Z" fill="#2aa876"/>
+  <path d="M92 314c34-48 64-62 96-34 23 20 47 18 72-10 35-40 68-30 116 44H92Z" fill="#f0b429"/>
+  <circle cx="136" cy="118" r="28" fill="#ff5d73"/>
+  <circle cx="382" cy="132" r="34" fill="#38bdf8"/>
+  <path d="M248 126v180" stroke="#fff" stroke-width="30" stroke-linecap="round"/>
+  <path d="M248 126c34-20 72-18 104 4v66c-32-22-70-24-104-4v-66Z" fill="#ff5d73"/>
+  <path d="M205 299h86v66h-86z" fill="#ffffff"/>
+</svg>
