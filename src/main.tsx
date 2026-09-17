@@ -19,14 +19,12 @@ import {
   getTieBreakVotes,
   resetVotingData,
   saveAppState,
-  saveContestantProfiles,
   savePhoto,
   saveTieBreakRound
 } from './db/votingDb';
 import type {
   AppMode,
   Contestant,
-  ContestantPhoto,
   ContestantProfile,
   PendingPodiumDecision,
   RankedContestant,
@@ -35,8 +33,9 @@ import type {
   VoteRecord
 } from './types';
 import { formatContestantNumber, rankLabel } from './utils/format';
-import { createContestantProfiles, resolveContestants } from './utils/contestantProfiles';
+import { resolveContestants } from './utils/contestantProfiles';
 import { ImageProcessingError, processContestantPhoto } from './utils/images';
+import { createPhotoAutosave } from './utils/photoAutosave';
 import {
   calculateDenseRankings,
   calculateTotalsForIds,
@@ -67,7 +66,8 @@ function App() {
   const [loading, setLoading] = React.useState(true);
   const [processingPhotoIds, setProcessingPhotoIds] = React.useState<Set<string>>(new Set());
 
-  const photoUrlsRef = React.useRef<string[]>([]);
+  const photoUrlsRef = React.useRef<PhotoMap>({});
+  const autosavePhoto = React.useMemo(() => createPhotoAutosave(processContestantPhoto, savePhoto), []);
 
   const refreshData = React.useCallback(async () => {
     const [state, profiles, storedPhotos, votes, rounds, tieVotes] = await Promise.all([
@@ -79,19 +79,17 @@ function App() {
       getTieBreakVotes()
     ]);
 
-    for (const url of photoUrlsRef.current) {
+    for (const url of Object.values(photoUrlsRef.current)) {
       URL.revokeObjectURL(url);
     }
 
     const nextPhotos: PhotoMap = {};
-    const urls: string[] = [];
     for (const photo of storedPhotos) {
       const url = URL.createObjectURL(photo.image);
       nextPhotos[photo.contestantId] = url;
-      urls.push(url);
     }
 
-    photoUrlsRef.current = urls;
+    photoUrlsRef.current = nextPhotos;
     setContestantProfiles(profiles);
     setPhotos(nextPhotos);
     setMainVotes(votes);
@@ -105,7 +103,7 @@ function App() {
   React.useEffect(() => {
     void refreshData();
     return () => {
-      for (const url of photoUrlsRef.current) {
+      for (const url of Object.values(photoUrlsRef.current)) {
         URL.revokeObjectURL(url);
       }
     };
@@ -133,10 +131,6 @@ function App() {
   async function handlePhotoChange(contestantId: string, file: File | undefined) {
     if (!file) return;
 
-    if (processingPhotoIds.has(contestantId)) {
-      return;
-    }
-
     console.debug('contestant photo input changed', {
       contestantId,
       fileName: file.name,
@@ -147,18 +141,17 @@ function App() {
     setProcessingPhotoIds((ids) => new Set(ids).add(contestantId));
     setFeedback('กำลังประมวลผลรูป...');
 
-    try {
-      const image = await processContestantPhoto(file);
-      const photo: ContestantPhoto = {
-        contestantId,
-        image,
-        updatedAt: new Date().toISOString()
-      };
-      await savePhoto(photo);
-      await refreshData();
+    const result = await autosavePhoto(contestantId, file);
+    if (result.status === 'saved') {
+      const url = URL.createObjectURL(result.image);
+      const previousUrl = photoUrlsRef.current[contestantId];
+      photoUrlsRef.current[contestantId] = url;
+      setPhotos((current) => ({ ...current, [contestantId]: url }));
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
       console.debug('contestant photo saved', { contestantId, fileName: file.name });
-      setFeedback('บันทึกรูปเรียบร้อย');
-    } catch (error) {
+      setFeedback('บันทึกแล้ว');
+    } else if (result.status === 'failed') {
+      const { error } = result;
       console.error('contestant photo processing failed', { contestantId, error });
       if (error instanceof ImageProcessingError && error.code === 'unsupported-format') {
         setFeedback('ไม่รองรับไฟล์รูปภาพประเภทนี้ กรุณาเลือก JPEG, PNG, WebP, HEIC หรือ HEIF');
@@ -167,25 +160,14 @@ function App() {
       } else {
         setFeedback('ไม่สามารถเพิ่มรูปได้ กรุณาลองใหม่อีกครั้ง');
       }
-    } finally {
+    }
+    if (result.status !== 'superseded') {
       setProcessingPhotoIds((ids) => {
         const nextIds = new Set(ids);
         nextIds.delete(contestantId);
         return nextIds;
       });
     }
-  }
-
-  async function saveSetupNames(namesByContestantId: Record<string, string>) {
-    const profiles = createContestantProfiles(contestants, namesByContestantId);
-    await saveContestantProfiles(profiles);
-    setContestantProfiles(profiles);
-    setFeedback('บันทึกการตั้งค่าเรียบร้อยแล้ว');
-  }
-
-  async function saveSetupAndStartVoting(namesByContestantId: Record<string, string>) {
-    await saveSetupNames(namesByContestantId);
-    await startVoting();
   }
 
   async function startVoting() {
@@ -343,8 +325,7 @@ function App() {
           photos={photos}
           onPhotoChange={handlePhotoChange}
           processingPhotoIds={processingPhotoIds}
-          onSaveNames={saveSetupNames}
-          onStartVoting={saveSetupAndStartVoting}
+          onStartVoting={startVoting}
         />
       ) : null}
 
@@ -445,31 +426,14 @@ function SetupView({
   photos,
   onPhotoChange,
   processingPhotoIds,
-  onSaveNames,
   onStartVoting
 }: {
   contestants: Contestant[];
   photos: PhotoMap;
   onPhotoChange: (contestantId: string, file: File | undefined) => Promise<void>;
   processingPhotoIds: Set<string>;
-  onSaveNames: (namesByContestantId: Record<string, string>) => Promise<void>;
-  onStartVoting: (namesByContestantId: Record<string, string>) => Promise<void>;
+  onStartVoting: () => Promise<void>;
 }) {
-  const [namesByContestantId, setNamesByContestantId] = React.useState<Record<string, string>>(() =>
-    Object.fromEntries(contestants.map((contestant) => [contestant.id, contestant.name]))
-  );
-
-  React.useEffect(() => {
-    setNamesByContestantId(Object.fromEntries(contestants.map((contestant) => [contestant.id, contestant.name])));
-  }, [contestants]);
-
-  function updateName(contestantId: string, displayName: string) {
-    setNamesByContestantId((names) => ({
-      ...names,
-      [contestantId]: displayName
-    }));
-  }
-
   return (
     <main className="setup-page">
       <section className="mode-panel">
@@ -478,10 +442,7 @@ function SetupView({
           <h2>ตั้งค่าผู้เข้าประกวด</h2>
         </div>
         <div className="setup-actions">
-          <button className="secondary-action" type="button" onClick={() => void onSaveNames(namesByContestantId)}>
-            บันทึกการตั้งค่า
-          </button>
-          <button className="primary-action" type="button" onClick={() => void onStartVoting(namesByContestantId)}>
+          <button className="primary-action" type="button" onClick={() => void onStartVoting()}>
             <Vote size={24} />
             กลับหน้าโหวต
           </button>
@@ -491,17 +452,13 @@ function SetupView({
         {contestants.map((contestant) => (
           <article className="setup-row" key={contestant.id}>
             <div className="setup-number">{formatContestantNumber(contestant.number)}</div>
-            <label className="name-field">
+            <div className="name-field">
               <span>ชื่อผู้เข้าประกวด</span>
-              <input
-                type="text"
-                value={namesByContestantId[contestant.id] ?? contestant.name}
-                onChange={(event) => updateName(contestant.id, event.currentTarget.value)}
-              />
-            </label>
+              <strong>{contestant.name}</strong>
+            </div>
             <div className="setup-photo-preview">
               {photos[contestant.id] ? (
-                <img src={photos[contestant.id]} alt={namesByContestantId[contestant.id] ?? contestant.name} />
+                <img src={photos[contestant.id]} alt={contestant.name} />
               ) : (
                 <span>ยังไม่ได้เพิ่มรูป</span>
               )}
@@ -511,17 +468,14 @@ function SetupView({
               <input
                 type="file"
                 accept="image/*,.heic,.heif"
-                disabled={processingPhotoIds.has(contestant.id)}
                 onChange={async (event) => {
                   const input = event.currentTarget;
                   const file = input.files?.[0];
-                  try {
-                    await onPhotoChange(contestant.id, file);
-                  } finally {
-                    input.value = '';
-                  }
+                  input.value = '';
+                  await onPhotoChange(contestant.id, file);
                 }}
               />
+              {processingPhotoIds.has(contestant.id) ? <small>กำลังบันทึกรูป...</small> : null}
             </label>
           </article>
         ))}

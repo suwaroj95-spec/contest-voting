@@ -192,7 +192,7 @@ describe('voting business logic', () => {
     const photoReferences = { '01': 'indexeddb-photo' };
 
     expect(contestants).toHaveLength(13);
-    expect(contestants[0].name).toBe('ผู้เข้าประกวด 01');
+    expect(contestants[0].name).toBe('ศกบ.สนผ.กบ.ทอ.');
     expect(photoReferences['01']).toBe('indexeddb-photo');
   });
 

@@ -3,3 +3,5 @@ dist/
 *.tsbuildinfo
 .DS_Store
 *.local
+/local-input/
+/รายชื่อผู้เข้าประกวดแบบเรียงตามลำดับ.txt
